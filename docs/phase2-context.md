@@ -1,23 +1,24 @@
 # Phase 2 Context: MCP Server Build
 
-> This document captures findings from Phase 1 testing and SDK exploration. Load this into context when starting any Phase 2 implementation session.
+> This document captures findings from Phase 1 testing and SDK exploration that informed the Phase 2 implementation.
 
 ## Current State
 
-- **Phase 1**: Complete. Instruction profile at `docs/plans/aleph-cloud-agent-instructions.md` — tested end-to-end (create VM, SSH, destroy).
-- **Phase 2**: Plan written at `.claude/plans/elegant-cooking-clock.md`. No code yet.
-- **Active test VM**: May still be running — check `~/.aleph-agent-inventory.json` and `aleph instance list --json` on session start.
+- **Phase 1**: Complete. Instruction profile at `docs/plans/aleph-cloud-agent-instructions.md`.
+- **Phase 2**: Complete. MCP server at `src/aleph_agent_mcp/`. 6 tools, safety controls, 59 unit tests + 4 integration tests.
 
-## Account Setup (already done)
+## Account Setup
 
-- Agent keypair exists at `~/.aleph-im/private-keys/ethereum.key`
-- Agent address: `0xD572F0E1FeB93995816280200e55B1739Cd2989b`
+- Agent keypair at `~/.aleph-im/private-keys/ethereum.key`
+- Current agent address: `0x543C344715B5692C106C087c2Ce242e564474A2C` (key was regenerated; previous address `0xD572` is lost)
 - Human address (delegated): `0x08ef886626648443Cc39FCd6700646f5b37E3871`
-- Delegation: INSTANCE permission granted from human → agent
+- Delegation: INSTANCE permission granted from human → agent (needs re-granting for new agent address)
 - Human credit balance: ~1,000 credits
 - SSH key: `~/.ssh/id_ed25519.pub`
 
-## CLI Issues Found During Testing (MCP server must solve these)
+> **Lesson learned**: The original agent key (`0xD572`) was overwritten by a second `aleph account create` call, orphaning a running VM that could no longer be destroyed. The MCP server now tracks `signing_address` per VM and blocks destroy attempts when the current key doesn't match.
+
+## CLI Issues Found During Testing (all solved by using SDK directly)
 
 1. **`aleph account create` is interactive** — prompts for key name. `echo "ethereum" | aleph account create --chain ETH` works as workaround.
 2. **`aleph instance create` has 2 interactive prompts** — rootfs selection and rootfs size. Cannot be piped. Requires pty wrapper. SDK direct avoids this entirely.
@@ -55,7 +56,7 @@ account = _load_account(private_key_path=Path("~/.aleph-im/private-keys/ethereum
 ```python
 async with AlephHttpClient() as client:
     balance = await client.get_balances(address)
-    # balance.credit_balance: int — this is what matters
+    # balance.credit_balance: int from SDK, cast to float in aleph_ops.py
     # balance.balance: Decimal — legacy ALEPH tokens, ignore
 ```
 
@@ -152,11 +153,15 @@ Note: For delegated instances, query using the agent's address (the signer), not
 ## Key SDK Gotchas
 
 1. **`Ports` uses `root` not `ports`**: `Ports(root={22: PortFlags(tcp=True, udp=False)})`
-2. **`credit_balance` is `int`, not `Decimal`** on `BalanceResponse`
+2. **`credit_balance` is `int`, not `Decimal`** on `BalanceResponse` — cast to `float` in `aleph_ops.py`
 3. **`_load_account` is a private function** — import path is `aleph.sdk.account._load_account`
 4. **Networking info is not in create response** — must poll `get_instance_executions_info` after start to get IPv4/port
 5. **CRN T&C**: Pass `terms_and_conditions=ItemHash(crn.terms_and_conditions)` in `NodeRequirements` to auto-accept
 6. **`VmClient` is an async context manager** — always use `async with VmClient(account, url) as vm:`
+7. **`CrnList` is not directly iterable** — use `crn_list.crns` to get the list of CRN objects
+8. **CRN `gpu_support` not `has_gpu`** — the SDK attribute is `gpu_support: bool`
+9. **CRN has no `score` attribute** — the score from the web dashboard is not available in the SDK
+10. **Key overwrite risk** — `aleph account create` silently overwrites `~/.aleph-im/private-keys/ethereum.key`. The MCP server never creates keys; it only loads them. Track `signing_address` per VM to detect mismatches.
 
 ## Test CRNs (known working)
 
@@ -167,7 +172,8 @@ Note: For delegated instances, query using the agent's address (the signer), not
 
 ## Dependencies (installed versions)
 
-- `aleph-client==1.9.0`
-- `aleph-sdk-python==2.3.0`
-- FastMCP: needs `fastmcp>=2.0` (to be installed)
+- `aleph-client>=1.9.0`
+- `aleph-sdk-python>=2.3.0`
+- `fastmcp>=2.0`
+- `pydantic-settings>=2.0`
 - Python 3.11+ required
